@@ -5,7 +5,8 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
-      base: '/Ma/',
+      // استخدام مسار نسبي ليعمل على أي مجلد Pages (مثلاً /Ma/ أو /AFK/)
+      base: './',
       server: {
         port: 3000,
         host: '0.0.0.0',
