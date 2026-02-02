@@ -6,6 +6,7 @@ import { encode, playWelcomeChime } from './services/audioUtils';
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-12-2025';
 const FRAME_RATE = 2.0;
 const JPEG_QUALITY = 0.3;
+const LOCAL_STORAGE_KEY = 'mabar_gemini_api_key';
 
 // مكون الشعار الاحترافي (يحاكي الصورة المرفوعة بدقة عالية)
 const MabarLogo: React.FC<{ size?: string }> = ({ size = "w-16 h-16" }) => (
@@ -22,6 +23,8 @@ const App: React.FC = () => {
   const [status, setStatus] = useState<'idle' | 'starting' | 'active' | 'paused'>('idle');
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [isReporting, setIsReporting] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [hasSavedKey, setHasSavedKey] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -84,16 +87,28 @@ const App: React.FC = () => {
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { isReportingRef.current = isReporting; }, [isReporting]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (stored) {
+      setApiKeyInput(stored);
+      setHasSavedKey(true);
+    }
+  }, []);
+
   const startAssistant = async () => {
     setStatus('starting');
     setErrorStatus(null);
     speakUI("جاري تشغيل معبر، يرجى الانتظار");
 
     try {
-      const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.VITE_API_KEY || (window as any).GEMINI_API_KEY || '';
+      const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.VITE_API_KEY || (window as any).GEMINI_API_KEY || '';
+      const manualKey = apiKeyInput.trim();
+      const apiKey = manualKey || envKey;
       if (!apiKey) {
-        setErrorStatus('مفتاح GEMINI_API_KEY غير موجود');
+        setErrorStatus('الرجاء إدخال مفتاح Gemini أولاً');
         setStatus('idle');
+        speakUI('الرجاء إدخال مفتاح جيمني ثم الضغط على حفظ');
         return;
       }
 
@@ -188,6 +203,27 @@ const App: React.FC = () => {
     else if (statusRef.current === 'paused') { setStatus('active'); speakUI("استئناف"); }
   };
 
+  const handleSaveKey = () => {
+    const trimmed = apiKeyInput.trim();
+    if (!trimmed) {
+      setErrorStatus('أدخل مفتاح Gemini ثم اضغط حفظ');
+      speakUI('أدخل مفتاح جيمني ثم اضغط حفظ');
+      return;
+    }
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, trimmed);
+    setApiKeyInput(trimmed);
+    setHasSavedKey(true);
+    setErrorStatus(null);
+    speakUI('تم حفظ المفتاح، يمكنك البدء الآن');
+  };
+
+  const handleClearKey = () => {
+    window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+    setApiKeyInput('');
+    setHasSavedKey(false);
+    speakUI('تم مسح المفتاح');
+  };
+
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
@@ -242,7 +278,31 @@ const App: React.FC = () => {
           <h1 className="text-8xl font-black mt-8 text-white">مَعْبَر</h1>
           <p className="text-teal-400 text-3xl font-bold mt-2">عينُك في كل مكان</p>
           
-          <button onClick={startAssistant} className="mt-20 w-full max-w-md bg-teal-600 hover:bg-teal-500 text-white text-6xl font-black py-16 rounded-[4rem] shadow-2xl border-b-[16px] border-teal-800 active:translate-y-2 active:border-b-0 transition-all">
+          <div className="w-full max-w-2xl mt-10 bg-slate-900/80 border border-white/10 rounded-3xl p-6 shadow-xl flex flex-col gap-4">
+            <label className="text-2xl font-bold text-white flex items-center justify-between gap-4">
+              <span>أدخل مفتاح Gemini</span>
+              {hasSavedKey && <span className="text-sm bg-emerald-600 text-white px-3 py-1 rounded-full">محفوظ محلياً</span>}
+            </label>
+            <input
+              type="password"
+              inputMode="text"
+              className="w-full text-2xl p-4 rounded-2xl bg-slate-800 border border-white/10 text-white placeholder:text-slate-400"
+              placeholder="ضع المفتاح هنا..."
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-4 justify-between items-center">
+              <button onClick={handleSaveKey} className="flex-1 min-w-[200px] bg-teal-600 hover:bg-teal-500 text-white text-2xl font-black py-4 rounded-2xl border-b-[8px] border-teal-800 active:translate-y-1 active:border-b-0 transition-all">حفظ المفتاح</button>
+              <button onClick={handleClearKey} className="flex-1 min-w-[200px] bg-slate-700 hover:bg-slate-600 text-white text-2xl font-black py-4 rounded-2xl border-b-[8px] border-slate-900 active:translate-y-1 active:border-b-0 transition-all">مسح المفتاح</button>
+            </div>
+            <p className="text-lg text-slate-300 leading-relaxed">يُخزَّن المفتاح في جهازك فقط (LocalStorage). لن يبدأ المسح بدون مفتاح.</p>
+          </div>
+          
+          <button
+            onClick={startAssistant}
+            disabled={!apiKeyInput.trim()}
+            className={`mt-20 w-full max-w-md text-white text-6xl font-black py-16 rounded-[4rem] shadow-2xl border-b-[16px] active:translate-y-2 active:border-b-0 transition-all ${apiKeyInput.trim() ? 'bg-teal-600 hover:bg-teal-500 border-teal-800' : 'bg-slate-700 border-slate-900 opacity-80 cursor-not-allowed'}`}
+          >
             ابدأ المسح
           </button>
         </div>
