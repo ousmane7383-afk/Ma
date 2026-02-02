@@ -1,11 +1,11 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { encode, decode, decodeAudioData, playWelcomeChime } from './services/audioUtils';
+import { encode, playWelcomeChime } from './services/audioUtils';
 
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-12-2025';
-const FRAME_RATE = 2.0; 
-const JPEG_QUALITY = 0.3; 
+const FRAME_RATE = 2.0;
+const JPEG_QUALITY = 0.3;
 
 // مكون الشعار الاحترافي (يحاكي الصورة المرفوعة بدقة عالية)
 const MabarLogo: React.FC<{ size?: string }> = ({ size = "w-16 h-16" }) => (
@@ -31,6 +31,11 @@ const App: React.FC = () => {
   const frameIntervalRef = useRef<number | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const streamRef = useRef<MediaStream | null>(null);
+  const statusRef = useRef(status);
+  const isReportingRef = useRef(isReporting);
+  const speechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const isMountedRef = useRef(true);
 
   const getSystemInstruction = useCallback(() => {
     return `أنت "معبر" (MABAR)، المساعد البصري الذكي. صوتك أنثوي، دافئ وواضح.
@@ -40,33 +45,44 @@ const App: React.FC = () => {
     اللغة: العربية (ar-SA).`;
   }, []);
 
-  const speakUI = (text: string) => {
-    if (!window.speechSynthesis) return;
+  const resolveArabicVoice = useCallback(() => {
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (!synth) return null;
+    const voices = synth.getVoices() || [];
+    const preferred = voices.find(v => v.lang?.toLowerCase().startsWith('ar-sa') && /female|woman|feminine|an|ar/i.test(v.name));
+    const anyArabic = voices.find(v => v.lang?.toLowerCase().startsWith('ar'));
+    return preferred || anyArabic || null;
+  }, []);
+
+  useEffect(() => {
+    const updateVoice = () => { speechVoiceRef.current = resolveArabicVoice(); };
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.addEventListener('voiceschanged', updateVoice);
+      updateVoice();
+    }
+    return () => { window.speechSynthesis?.removeEventListener('voiceschanged', updateVoice); };
+  }, [resolveArabicVoice]);
+
+  const speakLine = useCallback((text: string, onEnd?: () => void) => {
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (!synth) return;
     try {
-      window.speechSynthesis.cancel();
+      synth.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'ar-SA';
       utterance.rate = 1.0;
-      window.speechSynthesis.speak(utterance);
+      utterance.pitch = 1.0;
+      speechVoiceRef.current = speechVoiceRef.current || resolveArabicVoice();
+      if (speechVoiceRef.current) utterance.voice = speechVoiceRef.current;
+      utterance.onend = () => { onEnd?.(); };
+      synth.speak(utterance);
     } catch (e) { console.warn(e); }
-  };
+  }, [resolveArabicVoice]);
 
-  const handleModelAudio = async (base64Audio: string) => {
-    if (!outputAudioContextRef.current) return;
-    const ctx = outputAudioContextRef.current;
-    try {
-      if (ctx.state === 'suspended') await ctx.resume();
-      nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-      const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-      source.onended = () => audioSourcesRef.current.delete(source);
-      source.start(nextStartTimeRef.current);
-      nextStartTimeRef.current += audioBuffer.duration;
-      audioSourcesRef.current.add(source);
-    } catch (e) { console.error(e); }
-  };
+  const speakUI = (text: string) => speakLine(text);
+
+  useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => { isReportingRef.current = isReporting; }, [isReporting]);
 
   const startAssistant = async () => {
     setStatus('starting');
@@ -74,35 +90,42 @@ const App: React.FC = () => {
     speakUI("جاري تشغيل معبر، يرجى الانتظار");
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: true, 
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
+      const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.VITE_API_KEY || (window as any).GEMINI_API_KEY || '';
+      if (!apiKey) {
+        setErrorStatus('مفتاح GEMINI_API_KEY غير موجود');
+        setStatus('idle');
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
       });
+      streamRef.current = stream;
 
       if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       if (!outputAudioContextRef.current) outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      
+
       await audioContextRef.current.resume();
       await outputAudioContextRef.current.resume();
       playWelcomeChime(outputAudioContextRef.current);
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey });
       const sessionPromise = ai.live.connect({
         model: MODEL_NAME,
         config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          responseModalities: [Modality.TEXT],
           systemInstruction: getSystemInstruction(),
         },
         callbacks: {
           onopen: () => {
             setStatus('active');
             if (videoRef.current) videoRef.current.srcObject = stream;
-            
+
             const source = audioContextRef.current!.createMediaStreamSource(stream);
             const processor = audioContextRef.current!.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
-              if (status !== 'active') return;
+              if (statusRef.current !== 'active') return;
               const inputData = e.inputBuffer.getChannelData(0);
               const int16 = new Int16Array(inputData.length);
               for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
@@ -114,10 +137,11 @@ const App: React.FC = () => {
             speakUI("تم تفعيل الكاميرا، ابدأ الحركة الآن");
           },
           onmessage: async (msg: LiveServerMessage) => {
-            const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (audioData) {
-              await handleModelAudio(audioData);
-              if (isReporting) setIsReporting(false);
+            const parts = msg.serverContent?.modelTurn?.parts || [];
+            const textPart = parts.find(p => (p as any).text)?.text as string | undefined;
+            if (textPart && isReportingRef.current) {
+              isReportingRef.current = false;
+              speakLine(textPart, () => { setIsReporting(false); });
             }
           },
           onerror: () => { setErrorStatus("خطأ في الخادم"); stopAssistant(); },
@@ -128,10 +152,10 @@ const App: React.FC = () => {
       sessionPromiseRef.current = sessionPromise;
 
       frameIntervalRef.current = window.setInterval(() => {
-        if (status !== 'active' || !videoRef.current || !canvasRef.current) return;
+        if (statusRef.current !== 'active' || !videoRef.current || !canvasRef.current) return;
         const ctx = canvasRef.current.getContext('2d');
         if (!ctx) return;
-        canvasRef.current.width = 320; 
+        canvasRef.current.width = 320;
         canvasRef.current.height = 240;
         ctx.drawImage(videoRef.current, 0, 0, 320, 240);
         canvasRef.current.toBlob(async (blob) => {
@@ -153,25 +177,46 @@ const App: React.FC = () => {
   };
 
   const handleAsk = () => {
-    if (status !== 'active' || isReporting) return;
+    if (statusRef.current !== 'active' || isReportingRef.current) return;
     setIsReporting(true);
     speakUI("جاري التحليل");
-    sessionPromiseRef.current?.then(s => s.sendRealtimeInput({ text: "صف المكان بدقة لمدة 10 ثوانٍ" }));
+    sessionPromiseRef.current?.then(s => s.sendRealtimeInput({ text: "صف ما تراه الآن بدقة وباختصار لمدة 10 ثوانٍ متواصلة باللغة العربية، مع التركيز على العوائق، المسارات المفتوحة، والأشخاص." }));
   };
 
   const togglePause = () => {
-    if (status === 'active') { setStatus('paused'); speakUI("توقف مؤقت"); }
-    else { setStatus('active'); speakUI("استئناف"); }
+    if (statusRef.current === 'active') { setStatus('paused'); speakUI("توقف مؤقت"); }
+    else if (statusRef.current === 'paused') { setStatus('active'); speakUI("استئناف"); }
   };
 
-  const stopAssistant = () => {
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    sessionPromiseRef.current?.then(s => s.close());
-    if (videoRef.current?.srcObject) (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      stopAssistant(true);
+    };
+  }, [stopAssistant]);
+
+  const stopAssistant = useCallback((silent = false) => {
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
+    sessionPromiseRef.current?.then(s => s.close()).catch(() => {});
+    sessionPromiseRef.current = null;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    audioContextRef.current?.suspend().catch(() => {});
+    outputAudioContextRef.current?.suspend().catch(() => {});
     audioSourcesRef.current.forEach(s => s.stop());
-    setStatus('idle');
-    speakUI("إغلاق");
-  };
+    audioSourcesRef.current.clear();
+    if (!silent) speakUI("إغلاق");
+    window.speechSynthesis?.cancel();
+    if (isMountedRef.current) {
+      setIsReporting(false);
+      setStatus('idle');
+    }
+  }, [speakUI]);
 
   return (
     <div className="relative h-[100dvh] w-full bg-slate-950 flex flex-col overflow-hidden text-slate-100 safe-top safe-bottom">
@@ -182,6 +227,14 @@ const App: React.FC = () => {
       </div>
 
       <canvas ref={canvasRef} className="hidden" />
+
+      {errorStatus && (
+        <div className="absolute z-20 inset-x-4 bottom-6">
+          <div className="bg-red-600 text-white text-2xl font-bold py-4 px-6 rounded-3xl text-center shadow-2xl border border-red-300/70">
+            {errorStatus}
+          </div>
+        </div>
+      )}
 
       {status === 'idle' ? (
         <div className="relative z-10 flex-1 flex flex-col items-center justify-center p-8 animate-in fade-in">
