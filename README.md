@@ -6,7 +6,12 @@
 
 This contains everything you need to run your app locally.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1oa4BYBCovftMEml1BPVkbcLlZZrSoyj3
+Live demo (GitHub Pages): https://ousmane7383-afk.github.io/Ma/
+
+Usage on the live demo
+- أدخل مفتاح Gemini في الحقل ثم اضغط "حفظ المفتاح" (يُخزَّن محلياً فقط).
+- اضغط "ابدأ المسح" لتشغيل الكاميرا والصوت.
+- زر "اسأل" يعطي وصفاً صوتياً فورياً.
 
 ## Run Locally
 
